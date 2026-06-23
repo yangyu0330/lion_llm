@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ollama 챗봇</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">LL</div>
+          <div>
+            <strong>LLM 실습</strong>
+            <span>Ollama 챗봇</span>
+          </div>
+        </div>
+
+        <button class="new-chat" id="newChatButton" type="button">
+          <span>+</span>
+          새 대화
+        </button>
+
+        <div class="session-panel">
+          <div class="sidebar-label">대화</div>
+          <div class="session-list" id="sessionList">
+            <div class="session-empty">저장된 대화가 없습니다.</div>
+          </div>
+        </div>
+
+        <div class="settings">
+          <label for="modelSelect">모델</label>
+          <select id="modelSelect">
+            <option value="">JSON 기본 모델 사용</option>
+          </select>
+
+          <label for="temperatureRange"
+            >창의성 <span id="temperatureValue">0.7</span></label
+          >
+          <input
+            id="temperatureRange"
+            type="range"
+            min="0"
+            max="1.5"
+            step="0.1"
+            value="0.7"
+          />
+        </div>
+
+        <div class="prompt-note">
+          개인정보와 기본 성격은 <code>prompts/personal-profile.json</code>에서
+          수정합니다.
+        </div>
+      </aside>
+
+      <main class="chat">
+        <header class="chat-header">
+          <div>
+            <h1>Ollama 챗봇</h1>
+            <p>로컬 Ollama 모델과 분리된 JSON 프롬프트로 답변합니다.</p>
+          </div>
+          <div class="status" id="status">Ollama 확인 중</div>
+        </header>
+
+        <section class="messages" id="messages" aria-live="polite">
+          <div class="empty-state">
+            <h2>무엇을 물어볼까요?</h2>
+            <div class="suggestions">
+              <button
+                type="button"
+                data-prompt="내 프로필을 바탕으로 자기소개를 만들어줘."
+              >
+                자기소개
+              </button>
+              <button
+                type="button"
+                data-prompt="내 관심사를 바탕으로 프로젝트 아이디어 3개 추천해줘."
+              >
+                프로젝트 추천
+              </button>
+              <button
+                type="button"
+                data-prompt="멋쟁이사자처럼 세미나에서 보여줄 데모 질문을 만들어줘."
+              >
+                데모 질문
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <form class="composer" id="chatForm">
+          <textarea
+            id="promptInput"
+            rows="1"
+            placeholder="메시지를 입력하세요"
+            autocomplete="off"
+          ></textarea>
+          <button id="sendButton" type="submit" aria-label="전송">
+            <span>➜</span>
+          </button>
+        </form>
+      </main>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

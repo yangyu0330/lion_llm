@@ -1,0 +1,14 @@
+{
+  "name": "lion-llm-personal-chatbot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ollama local model chatbot workshop app",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
