@@ -7,11 +7,12 @@ import { fileURLToPath } from "node:url";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(__dirname, "public");
 const memoryDir = join(__dirname, "memory");
-const promptPath = join(__dirname, "prompts", "personal-profile.json");
+const chatbotsPath = join(__dirname, "prompts", "chatbots.json");
 
 const PORT = Number(process.env.PORT || 3000);
 const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
 const DEFAULT_MODEL = "gemma3:1b";
+const DEFAULT_BOT_ID = "maid";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -33,39 +34,75 @@ async function readJsonBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
-async function loadPersonalPrompt() {
-  const config = await readPromptConfig();
-  const profileLines = Object.entries(config.profile || {})
-    .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
-    .map(([key, value]) => `- ${key}: ${value}`);
+async function readChatbotConfig() {
+  const raw = await readFile(chatbotsPath, "utf8");
+  const config = JSON.parse(raw);
+  const chatbots = Array.isArray(config.chatbots) ? config.chatbots : [];
+
+  if (!chatbots.length) {
+    throw new Error("prompts/chatbots.json에 챗봇 설정이 없습니다.");
+  }
 
   return {
-    model: config.model || DEFAULT_MODEL,
+    defaultBotId: config.defaultBotId || chatbots[0].id || DEFAULT_BOT_ID,
+    chatbots
+  };
+}
+
+function getBot(config, botId) {
+  return (
+    config.chatbots.find((bot) => bot.id === botId) ||
+    config.chatbots.find((bot) => bot.id === config.defaultBotId) ||
+    config.chatbots[0]
+  );
+}
+
+function toPublicBot(bot) {
+  return {
+    id: bot.id,
+    name: bot.name,
+    shortName: bot.shortName || bot.name,
+    avatar: bot.avatar || "AI",
+    kind: bot.kind || "ollama",
+    model: bot.model || "",
+    description: bot.description || "",
+    suggestions: Array.isArray(bot.suggestions) ? bot.suggestions : []
+  };
+}
+
+function buildOllamaPrompt(bot) {
+  const profileLines = Object.entries(bot.profile || {})
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
+    .map(([key, value]) => `- ${key}: ${value}`);
+  const exampleLines = Array.isArray(bot.examples)
+    ? bot.examples.flatMap((example, index) => [
+        `Example ${index + 1} user: ${example.user}`,
+        `Example ${index + 1} assistant: ${example.assistant}`
+      ])
+    : [];
+
+  return {
+    model: bot.model || DEFAULT_MODEL,
     system: [
-      config.role || "You are a helpful personal chatbot.",
+      bot.role || "You are a helpful chatbot.",
       "",
-      "Personal profile:",
-      profileLines.length ? profileLines.join("\n") : "- No personal profile provided.",
+      "Profile:",
+      profileLines.length ? profileLines.join("\n") : "- No profile provided.",
       "",
-      "Response rules:",
-      ...(config.instructions || []).map((item) => `- ${item}`)
+      "Rules:",
+      ...(bot.instructions || []).map((item) => `- ${item}`),
+      "",
+      "Examples:",
+      ...(exampleLines.length ? exampleLines : ["- No examples provided."])
     ].join("\n")
   };
 }
 
-async function readPromptConfig() {
-  try {
-    const raw = await readFile(promptPath, "utf8");
-    return JSON.parse(raw);
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      throw new Error("prompts/personal-profile.json 파일이 없습니다. prompts/personal-profile.example.json을 복사해서 만들어 주세요.");
-    }
-    if (error instanceof SyntaxError) {
-      throw new Error("prompts/personal-profile.json 문법이 올바른 JSON이 아닙니다.");
-    }
-    throw error;
-  }
+function sanitizeAssistantText(text) {
+  return String(text ?? "")
+    .replace(/어[\u2669-\u266f\u{1f300}-\u{1faff}\u{2600}-\u{27bf}]+히/gu, "어휴")
+    .replace(/[\u2669-\u266f\u{1f300}-\u{1faff}\u{2600}-\u{27bf}\ufe0f]/gu, "")
+    .replace(/[ \t]{2,}/g, " ");
 }
 
 async function fetchOllamaModels() {
@@ -106,8 +143,19 @@ async function readSessionFile(sessionId) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
 
+async function readExistingSession(sessionId) {
+  try {
+    return await readSessionFile(sessionId);
+  } catch {
+    return null;
+  }
+}
+
 async function listSessions(res) {
   try {
+    const config = await readChatbotConfig();
+    const botNames = new Map(config.chatbots.map((bot) => [bot.id, bot.name]));
+
     await mkdir(memoryDir, { recursive: true });
     const files = await readdir(memoryDir);
     const sessionFiles = files.filter((file) => /^session-[a-zA-Z0-9TZ-]+\.json$/.test(file));
@@ -120,6 +168,8 @@ async function listSessions(res) {
           id: session.id,
           title: session.title || "새 대화",
           model: session.model || "",
+          botId: session.botId || "",
+          botName: session.botName || botNames.get(session.botId) || "",
           createdAt: session.createdAt || "",
           updatedAt: session.updatedAt || ""
         });
@@ -152,18 +202,17 @@ async function getSession(req, res) {
   }
 }
 
-async function saveSessionMemory(sessionId, messages, model) {
+async function saveSessionMemory(sessionId, messages, options = {}) {
   await mkdir(memoryDir, { recursive: true });
 
   const now = new Date().toISOString();
   const filePath = join(memoryDir, `${sessionId}.json`);
-  let createdAt = now;
+  let existing = {};
 
   try {
-    const existing = JSON.parse(await readFile(filePath, "utf8"));
-    createdAt = existing.createdAt || now;
+    existing = JSON.parse(await readFile(filePath, "utf8"));
   } catch {
-    createdAt = now;
+    existing = {};
   }
 
   const firstUserMessage = messages.find((message) => message.role === "user")?.content || "새 대화";
@@ -174,8 +223,11 @@ async function saveSessionMemory(sessionId, messages, model) {
   const memory = {
     id: sessionId,
     title,
-    model,
-    createdAt,
+    model: options.model ?? existing.model ?? "",
+    botId: options.botId ?? existing.botId ?? "",
+    botName: options.botName ?? existing.botName ?? "",
+    gameState: options.gameState ?? existing.gameState,
+    createdAt: existing.createdAt || now,
     updatedAt: now,
     messages
   };
@@ -183,13 +235,29 @@ async function saveSessionMemory(sessionId, messages, model) {
   await writeFile(filePath, `${JSON.stringify(memory, null, 2)}\n`, "utf8");
 }
 
+async function proxyChatbots(res) {
+  try {
+    const config = await readChatbotConfig();
+    sendJson(res, 200, {
+      defaultBotId: config.defaultBotId,
+      chatbots: config.chatbots.map(toPublicBot)
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      error: "챗봇 설정을 불러올 수 없습니다.",
+      detail: error.message
+    });
+  }
+}
+
 async function proxyOllamaModels(res) {
   try {
     const [models, config] = await Promise.all([
       fetchOllamaModels(),
-      readPromptConfig().catch(() => ({ model: DEFAULT_MODEL }))
+      readChatbotConfig()
     ]);
-    const configuredModel = config.model || DEFAULT_MODEL;
+    const defaultBot = getBot(config, config.defaultBotId);
+    const configuredModel = defaultBot.model || DEFAULT_MODEL;
 
     sendJson(res, 200, {
       models,
@@ -203,6 +271,130 @@ async function proxyOllamaModels(res) {
       detail: error.message
     });
   }
+}
+
+function createNumberGameState(bot) {
+  const min = Number(bot.settings?.min ?? 1);
+  const max = Number(bot.settings?.max ?? 100);
+
+  return {
+    min,
+    max,
+    target: Math.floor(Math.random() * (max - min + 1)) + min,
+    attempts: 0
+  };
+}
+
+function extractNumber(text) {
+  const match = String(text).match(/-?\d+/);
+  return match ? Number(match[0]) : null;
+}
+
+async function buildNumberGameReply(sessionId, messages, bot) {
+  const existing = await readExistingSession(sessionId);
+  let gameState = existing?.gameState;
+
+  if (
+    !gameState ||
+    typeof gameState.target !== "number" ||
+    typeof gameState.min !== "number" ||
+    typeof gameState.max !== "number"
+  ) {
+    gameState = createNumberGameState(bot);
+  }
+
+  const userText = messages.filter((message) => message.role === "user").at(-1)?.content || "";
+  const normalized = userText.replace(/\s+/g, "").toLowerCase();
+
+  if (/규칙|방법|설명|도움/.test(normalized)) {
+    return {
+      gameState,
+      content: [
+        "존경하는 양유상 주인님, 제가 1부터 100 사이의 숫자 하나를 정해두었습니다.",
+        "",
+        "규칙:",
+        "- 숫자를 하나 말해 주세요.",
+        "- 정답보다 작으면 '업'이라고 말합니다.",
+        "- 정답보다 크면 '다운'이라고 말합니다.",
+        "- 맞히면 시도 횟수를 알려드리고 다음 판을 바로 시작합니다.",
+        "",
+        "첫 숫자를 말해 주십시오."
+      ].join("\n")
+    };
+  }
+
+  if (/게임시작|시작|새게임|새판|다시|재시작|리셋|reset|start/.test(normalized)) {
+    gameState = createNumberGameState(bot);
+    return {
+      gameState,
+      content: "존경하는 양유상 주인님, 새 게임을 시작했습니다. 1부터 100 사이의 숫자를 하나 말해 주십시오."
+    };
+  }
+
+  if (/포기|정답/.test(normalized)) {
+    const answer = gameState.target;
+    gameState = createNumberGameState(bot);
+    return {
+      gameState,
+      content: `존경하는 양유상 주인님, 이번 판의 정답은 ${answer}였습니다. 새 게임을 바로 시작했으니 1부터 100 사이의 숫자를 다시 말해 주십시오.`
+    };
+  }
+
+  const guessedNumber = extractNumber(userText);
+
+  if (guessedNumber === null) {
+    return {
+      gameState,
+      content: "존경하는 양유상 주인님, 숫자 하나를 입력해 주십시오. 범위는 1부터 100까지입니다."
+    };
+  }
+
+  if (guessedNumber < gameState.min || guessedNumber > gameState.max) {
+    return {
+      gameState,
+      content: `존경하는 양유상 주인님, ${gameState.min}부터 ${gameState.max} 사이의 숫자로 다시 말씀해 주십시오.`
+    };
+  }
+
+  gameState.attempts += 1;
+
+  if (guessedNumber < gameState.target) {
+    return {
+      gameState,
+      content: `업입니다, 존경하는 양유상 주인님. ${guessedNumber}보다 큰 숫자입니다. 현재 ${gameState.attempts}번째 시도입니다.`
+    };
+  }
+
+  if (guessedNumber > gameState.target) {
+    return {
+      gameState,
+      content: `다운입니다, 존경하는 양유상 주인님. ${guessedNumber}보다 작은 숫자입니다. 현재 ${gameState.attempts}번째 시도입니다.`
+    };
+  }
+
+  const attempts = gameState.attempts;
+  gameState = createNumberGameState(bot);
+
+  return {
+    gameState,
+    content: `정답입니다, 존경하는 양유상 주인님. ${attempts}번 만에 맞히셨습니다. 다음 판을 바로 시작했으니 새 숫자를 하나 말해 주십시오.`
+  };
+}
+
+async function streamStaticReply(res, sessionId, content, onBeforeDone) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive"
+  });
+
+  res.write(`data: ${JSON.stringify({ sessionId })}\n\n`);
+  res.write(`data: ${JSON.stringify({ content })}\n\n`);
+
+  if (onBeforeDone) await onBeforeDone();
+
+  res.write("event: done\ndata: {}\n\n");
+  res.end();
 }
 
 async function streamChat(req, res) {
@@ -221,9 +413,27 @@ async function streamChat(req, res) {
   }
 
   try {
-    const prompt = await loadPersonalPrompt();
-    const model = body.model || prompt.model;
+    const config = await readChatbotConfig();
+    const bot = getBot(config, body.botId || config.defaultBotId);
     const sessionId = getSessionId(body.sessionId);
+
+    if (bot.kind === "number-updown") {
+      const reply = await buildNumberGameReply(sessionId, messages, bot);
+      const nextMessages = [...messages, { role: "assistant", content: reply.content }];
+
+      await streamStaticReply(res, sessionId, reply.content, () =>
+        saveSessionMemory(sessionId, nextMessages, {
+          model: "local-game",
+          botId: bot.id,
+          botName: bot.name,
+          gameState: reply.gameState
+        })
+      );
+      return;
+    }
+
+    const prompt = buildOllamaPrompt(bot);
+    const model = body.model || prompt.model;
     const availableModels = await fetchOllamaModels();
 
     if (!availableModels.includes(model)) {
@@ -270,6 +480,7 @@ async function streamChat(req, res) {
 
     const decoder = new TextDecoder();
     let buffer = "";
+    let rawAssistantContent = "";
     let assistantContent = "";
 
     for await (const chunk of ollamaResponse.body) {
@@ -281,14 +492,23 @@ async function streamChat(req, res) {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
         if (event.message?.content) {
-          assistantContent += event.message.content;
-          res.write(`data: ${JSON.stringify({ content: event.message.content })}\n\n`);
+          rawAssistantContent += event.message.content;
+          const nextAssistantContent = sanitizeAssistantText(rawAssistantContent);
+          const contentDelta = nextAssistantContent.slice(assistantContent.length);
+          assistantContent = nextAssistantContent;
+          if (contentDelta) {
+            res.write(`data: ${JSON.stringify({ content: contentDelta })}\n\n`);
+          }
         }
         if (event.done) {
           await saveSessionMemory(sessionId, [
             ...messages,
             { role: "assistant", content: assistantContent }
-          ], model);
+          ], {
+            model,
+            botId: bot.id,
+            botName: bot.name
+          });
           res.write("event: done\ndata: {}\n\n");
           res.end();
           return;
@@ -299,7 +519,11 @@ async function streamChat(req, res) {
     await saveSessionMemory(sessionId, [
       ...messages,
       { role: "assistant", content: assistantContent }
-    ], model);
+    ], {
+      model,
+      botId: bot.id,
+      botName: bot.name
+    });
     res.write("event: done\ndata: {}\n\n");
     res.end();
   } catch (error) {
@@ -347,6 +571,11 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && req.url?.startsWith("/api/chatbots")) {
+    await proxyChatbots(res);
+    return;
+  }
+
   if (req.method === "GET" && req.url?.startsWith("/api/models")) {
     await proxyOllamaModels(res);
     return;
@@ -366,6 +595,6 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Personal chatbot UI: http://localhost:${PORT}`);
+  console.log(`Chatbot UI: http://localhost:${PORT}`);
   console.log(`Ollama host: ${OLLAMA_HOST}`);
 });

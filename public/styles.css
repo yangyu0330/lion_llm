@@ -91,6 +91,45 @@ input {
   background: rgba(255, 255, 255, 0.14);
 }
 
+.bot-switch {
+  display: grid;
+  gap: 8px;
+}
+
+.bot-option {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-height: 58px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #f8fafc;
+  padding: 11px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bot-option:hover,
+.bot-option.active {
+  border-color: rgba(24, 160, 88, 0.75);
+  background: rgba(24, 160, 88, 0.2);
+}
+
+.bot-option strong,
+.bot-option span {
+  display: block;
+}
+
+.bot-option strong {
+  font-size: 14px;
+}
+
+.bot-option span {
+  color: #b9c5d6;
+  font-size: 12px;
+}
+
 .session-panel {
   display: grid;
   min-height: 0;
@@ -171,6 +210,12 @@ input {
   background: #182235;
   color: #ffffff;
   padding: 0 10px;
+}
+
+.settings select:disabled,
+.settings input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .prompt-note {
@@ -256,6 +301,12 @@ input {
   color: var(--panel-strong);
   font-size: clamp(28px, 5vw, 48px);
   line-height: 1.08;
+}
+
+.empty-state p {
+  margin: -8px 0 22px;
+  color: var(--muted);
+  font-size: 15px;
 }
 
 .suggestions {
